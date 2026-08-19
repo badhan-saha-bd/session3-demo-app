@@ -6,7 +6,7 @@ from app import response_for
 class ResponseTests(unittest.TestCase):
     def test_health_endpoint(self):
         status, payload = response_for("/health")
-        self.assertEqual(status, 201)
+        self.assertEqual(status, 200)
         self.assertEqual(payload, {"status": "ok"})
 
     def test_root_endpoint(self):
