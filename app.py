@@ -10,6 +10,7 @@ def response_for(path: str):
         return 200, {
             "application": "session3-training-app",
             "message": "GitHub-to-Docker-Hub CI demo is running",
+            "delivery": "Jenkins automated pipeline",
         }
     return 404, {"error": "not found"}
 
