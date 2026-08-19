@@ -9,7 +9,7 @@ def response_for(path: str):
     if path == "/":
         return 200, {
             "application": "session3-training-app",
-            "message": "GitHub-to-Docker-Hub CI demo is running",
+            "message": "Hello from session 3",
             "delivery": "Jenkins automated pipeline",
         }
     return 404, {"error": "not found"}
