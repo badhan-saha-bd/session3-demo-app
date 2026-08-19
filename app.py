@@ -8,7 +8,7 @@ def response_for(path: str):
         return 200, {"status": "ok"}
     if path == "/":
         return 200, {
-            "application": "session3-training-app",
+            "application": "Hello From BJIT Academy",
             "message": "Hello from session 3",
             "delivery": "Jenkins automated pipeline",
         }
