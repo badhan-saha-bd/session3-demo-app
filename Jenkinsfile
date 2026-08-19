@@ -8,11 +8,11 @@ pipeline {
     }
 
     triggers {
-        pollSCM('H/2 * * * *')
+        pollSCM('H/1 * * * *')
     }
 
     environment {
-        IMAGE_NAME = 'session3-training-app'
+        IMAGE_REPOSITORY = 'badhansahabd/session3-demo-app'
         SMOKE_CONTAINER = "session3-smoke-${BUILD_NUMBER}"
     }
 
@@ -20,7 +20,13 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
-                sh 'git rev-parse --short HEAD'
+                script {
+                    env.IMAGE_TAG = sh(
+                        script: 'git rev-parse --short=12 HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+                echo "Immutable image tag: ${IMAGE_TAG}"
             }
         }
 
@@ -53,7 +59,7 @@ pipeline {
 
         stage('Build Image') {
             steps {
-                sh 'docker build --tag ${IMAGE_NAME}:${BUILD_NUMBER} .'
+                sh 'docker build --tag ${IMAGE_REPOSITORY}:${IMAGE_TAG} .'
             }
         }
 
@@ -61,7 +67,7 @@ pipeline {
             steps {
                 sh '''
                     docker rm -f "$SMOKE_CONTAINER" >/dev/null 2>&1 || true
-                    docker run --detach --name "$SMOKE_CONTAINER" "$IMAGE_NAME:$BUILD_NUMBER"
+                    docker run --detach --name "$SMOKE_CONTAINER" "$IMAGE_REPOSITORY:$IMAGE_TAG"
 
                     ready=0
                     for attempt in $(seq 1 20); do
@@ -80,12 +86,36 @@ pipeline {
             }
         }
 
+        stage('Push to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-credentials',
+                    usernameVariable: 'DOCKERHUB_USERNAME',
+                    passwordVariable: 'DOCKERHUB_TOKEN'
+                )]) {
+                    sh 'printf %s "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin'
+                    script {
+                        try {
+                            sh '''
+                                docker push "$IMAGE_REPOSITORY:$IMAGE_TAG"
+                                docker tag "$IMAGE_REPOSITORY:$IMAGE_TAG" "$IMAGE_REPOSITORY:latest"
+                                docker push "$IMAGE_REPOSITORY:latest"
+                            '''
+                        } finally {
+                            sh 'docker logout >/dev/null 2>&1 || true'
+                        }
+                    }
+                }
+            }
+        }
+
         stage('Publish Evidence') {
             steps {
                 sh '''
-                    printf 'image=%s:%s\ncommit=%s\nbuild=%s\n' \
-                      "$IMAGE_NAME" \
-                      "$BUILD_NUMBER" \
+                    printf 'image=%s\nimmutable_tag=%s\nlatest_tag=%s\ncommit=%s\nbuild=%s\n' \
+                      "$IMAGE_REPOSITORY" \
+                      "$IMAGE_TAG" \
+                      latest \
                       "$(git rev-parse HEAD)" \
                       "$BUILD_TAG" \
                       > reports/build-metadata.txt
@@ -101,7 +131,7 @@ pipeline {
             sh 'docker rm -f "$SMOKE_CONTAINER" >/dev/null 2>&1 || true'
         }
         success {
-            echo "Trusted image created: ${IMAGE_NAME}:${BUILD_NUMBER}"
+            echo "Published ${IMAGE_REPOSITORY}:${IMAGE_TAG} and ${IMAGE_REPOSITORY}:latest"
         }
         failure {
             echo 'Pipeline failed. Read the first failing stage and its command output.'
