@@ -1,0 +1,133 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        timeout(time: 15, unit: 'MINUTES')
+        skipDefaultCheckout(true)
+    }
+
+    triggers {
+        pollSCM('* * * * *')
+    }
+
+    environment {
+        CLUSTER_NAME = 'session5'
+        KUBE_CONTEXT = 'kind-session5'
+        NAMESPACE = 'session5'
+        APP_NAME = 'training-app'
+        IMAGE_REPOSITORY = 'session5-training-app'
+        APP_URL = 'http://127.0.0.1:8081'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short=12 HEAD',
+                        returnStdout: true
+                    ).trim()
+                    env.IMAGE_TAG = "${BUILD_NUMBER}-${env.COMMIT_SHORT}"
+                }
+                echo "Source commit: ${COMMIT_SHORT}"
+                echo "Image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Static Check') {
+            steps {
+                sh 'python3 -m py_compile app.py'
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                sh '''
+                    rm -rf .venv reports
+                    python3 -m venv .venv
+                    .venv/bin/pip install --quiet -r requirements-dev.txt
+                    mkdir -p reports
+                    .venv/bin/python -m pytest --junitxml=reports/junit.xml
+                '''
+            }
+        }
+
+        stage('Build Image') {
+            steps {
+                sh 'docker build --tag "$IMAGE_REPOSITORY:$IMAGE_TAG" .'
+            }
+        }
+
+        stage('Load Image into kind') {
+            steps {
+                sh '''
+                    kind get clusters | grep -Fx "$CLUSTER_NAME"
+                    kind load docker-image "$IMAGE_REPOSITORY:$IMAGE_TAG" --name "$CLUSTER_NAME"
+                '''
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                sh '''
+                    sed "s|SESSION5_IMAGE|$IMAGE_REPOSITORY:$IMAGE_TAG|g" \
+                      k8s/kind/app.yaml > reports/rendered-app.yaml
+
+                    kubectl --context "$KUBE_CONTEXT" apply -f reports/rendered-app.yaml
+                    kubectl --context "$KUBE_CONTEXT" \
+                      rollout status deployment/$APP_NAME \
+                      --namespace "$NAMESPACE" \
+                      --timeout=120s
+                '''
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+                sh '''
+                    curl --fail --silent --show-error \
+                      --retry 10 --retry-delay 2 --retry-connrefused \
+                      "$APP_URL/health"
+                    curl --fail --silent --show-error "$APP_URL"
+                '''
+            }
+        }
+
+        stage('Publish Evidence') {
+            steps {
+                sh '''
+                    kubectl --context "$KUBE_CONTEXT" \
+                      get deployments,pods,services \
+                      --namespace "$NAMESPACE" \
+                      -o wide > reports/kubernetes-resources.txt
+
+                    printf 'commit=%s\nimage=%s:%s\nbuild=%s\ncluster=%s\nnamespace=%s\nurl=%s\n' \
+                      "$(git rev-parse HEAD)" \
+                      "$IMAGE_REPOSITORY" \
+                      "$IMAGE_TAG" \
+                      "$BUILD_TAG" \
+                      "$CLUSTER_NAME" \
+                      "$NAMESPACE" \
+                      "$APP_URL" \
+                      > reports/deployment-metadata.txt
+                '''
+                archiveArtifacts artifacts: 'reports/**', fingerprint: true
+            }
+        }
+    }
+
+    post {
+        always {
+            junit allowEmptyResults: true, testResults: 'reports/junit.xml'
+        }
+        success {
+            echo "CI/CD completed: ${IMAGE_REPOSITORY}:${IMAGE_TAG} is healthy on ${APP_URL}"
+        }
+        failure {
+            echo 'Pipeline stopped at a quality or deployment gate. Read the first failed stage.'
+        }
+    }
+}
