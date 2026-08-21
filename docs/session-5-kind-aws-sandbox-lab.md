@@ -142,16 +142,13 @@ Pod name are different.
 5. Allow up to one minute for Git polling to detect the commit.
 6. Open the new build and follow **Console Output**.
 
-Point out these pipeline stages:
+Point out the two clear pipeline phases in Stage View:
 
-- Checkout
-- Static Check
-- Unit Tests
-- Build Image
-- Load Image into kind
-- Deploy to Kubernetes
-- Smoke Test
-- Publish Evidence
+- **CI - Test & Build:** checkout, Python syntax check, three unit tests, test
+  reporting, and Docker image build.
+- **CD - Deploy to Kubernetes:** load the tested image into kind, apply the
+  manifest, wait for rollout, verify application health, and retain deployment
+  evidence.
 
 After the build is green, verify the new image and response inside the VM:
 
@@ -208,4 +205,3 @@ kubectl rollout status deployment/training-app -n session5
 kubectl get deployment,pods,service -n session5 -o wide
 curl http://127.0.0.1:8081/health
 ```
-
