@@ -21,7 +21,7 @@ pipeline {
     }
 
     stages {
-        stage('Checkout') {
+        stage('CI - Test & Build') {
             steps {
                 checkout scm
                 script {
@@ -31,73 +31,57 @@ pipeline {
                     ).trim()
                     env.IMAGE_TAG = "${BUILD_NUMBER}-${env.COMMIT_SHORT}"
                 }
+
                 echo "Source commit: ${COMMIT_SHORT}"
                 echo "Image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}"
-            }
-        }
 
-        stage('Static Check') {
-            steps {
-                sh 'python3 -m py_compile app.py'
-            }
-        }
-
-        stage('Unit Tests') {
-            steps {
                 sh '''
                     rm -rf .venv reports
+                    mkdir -p reports
+
+                    echo "Running Python syntax check"
+                    python3 -m py_compile app.py
+
+                    echo "Running unit tests"
                     python3 -m venv .venv
                     .venv/bin/pip install --quiet -r requirements-dev.txt
-                    mkdir -p reports
                     .venv/bin/python -m pytest --junitxml=reports/junit.xml
+
+                    echo "Building the tested application image"
+                    docker build --tag "$IMAGE_REPOSITORY:$IMAGE_TAG" .
                 '''
             }
-        }
-
-        stage('Build Image') {
-            steps {
-                sh 'docker build --tag "$IMAGE_REPOSITORY:$IMAGE_TAG" .'
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'reports/junit.xml'
+                }
             }
         }
 
-        stage('Load Image into kind') {
+        stage('CD - Deploy to Kubernetes') {
             steps {
                 sh '''
+                    echo "Loading the tested image into kind"
                     kind get clusters | grep -Fx "$CLUSTER_NAME"
                     kind load docker-image "$IMAGE_REPOSITORY:$IMAGE_TAG" --name "$CLUSTER_NAME"
-                '''
-            }
-        }
 
-        stage('Deploy to Kubernetes') {
-            steps {
-                sh '''
+                    echo "Applying the Kubernetes deployment"
                     sed "s|SESSION5_IMAGE|$IMAGE_REPOSITORY:$IMAGE_TAG|g" \
                       k8s/kind/app.yaml > reports/rendered-app.yaml
-
                     kubectl --context "$KUBE_CONTEXT" apply -f reports/rendered-app.yaml
+
+                    echo "Waiting for the Kubernetes rollout"
                     kubectl --context "$KUBE_CONTEXT" \
                       rollout status deployment/$APP_NAME \
                       --namespace "$NAMESPACE" \
                       --timeout=120s
-                '''
-            }
-        }
 
-        stage('Smoke Test') {
-            steps {
-                sh '''
+                    echo "Verifying the deployed application"
                     curl --fail --silent --show-error \
                       --retry 10 --retry-delay 2 --retry-connrefused \
                       "$APP_URL/health"
                     curl --fail --silent --show-error "$APP_URL"
-                '''
-            }
-        }
 
-        stage('Publish Evidence') {
-            steps {
-                sh '''
                     kubectl --context "$KUBE_CONTEXT" \
                       get deployments,pods,services \
                       --namespace "$NAMESPACE" \
@@ -113,20 +97,14 @@ pipeline {
                       "$APP_URL" \
                       > reports/deployment-metadata.txt
                 '''
-                archiveArtifacts artifacts: 'reports/**', fingerprint: true
-            }
-        }
-    }
 
-    post {
-        always {
-            junit allowEmptyResults: true, testResults: 'reports/junit.xml'
-        }
-        success {
-            echo "CI/CD completed: ${IMAGE_REPOSITORY}:${IMAGE_TAG} is healthy on ${APP_URL}"
-        }
-        failure {
-            echo 'Pipeline stopped at a quality or deployment gate. Read the first failed stage.'
+                echo "CD completed: ${IMAGE_REPOSITORY}:${IMAGE_TAG} is healthy on ${APP_URL}"
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true, fingerprint: true
+                }
+            }
         }
     }
 }
